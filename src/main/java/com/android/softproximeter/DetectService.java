@@ -2,6 +2,7 @@ package com.android.softproximeter;
 
 import static java.lang.Math.round;
 
+import android.Manifest;
 import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -12,17 +13,24 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.widget.Toast;
 
+import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
+
+import java.util.Arrays;
 
 public class DetectService extends Service implements SensorEventListener {
 
@@ -33,7 +41,7 @@ public class DetectService extends Service implements SensorEventListener {
     private float[] g;
     private float light1;
     private boolean isSensorRunning = false;
-    private int lastAction = -1, pocket = 0, inclination = -1;
+    private int lastAction = -1, pocket = 0, inclination = -1, mode = 1;
 
     private static final int EVENT_UNLOCK = 2;
     private static final int EVENT_TURN_ON_SCREEN = 1;
@@ -66,7 +74,7 @@ public class DetectService extends Service implements SensorEventListener {
                 g[2] = (float) (g[2] / norm_Of_g);
 
                 inclination = (int) round(Math.toDegrees(Math.acos(g[2])));
-                Log.d("", "XYZ: " + round(g[0]) + ",  " + round(g[1]) + ",  " + round(g[2]) + "  inc: " + inclination + " LIGHT: " + light1);
+                Log.d("", "XYZ: " + round(g[0]) + ",  " + g[1] + ",  " + round(g[2]) + "  inc: " + inclination + " LIGHT: " + light1);
             }
         }
         if (event.sensor.getType() == Sensor.TYPE_LIGHT) {
@@ -78,7 +86,16 @@ public class DetectService extends Service implements SensorEventListener {
     }
 
     public void detect(float light, float[] g, int inc) {
-        if ((light < 2) && (g[1] < -0.6) && (inc > 75) || (inc < 100)) {
+        String state = CallReceiver.returnCallState();
+        System.out.println("State:" + state);
+        if (state.equals("OFFHOOK") && light < 2 && g[1] < -0.6 && (inc > 75 && inc < 102)) {
+            pocket = 1;
+            deviceManger.lockNow();
+        }else if (state.equals("OFFHOOK") && light < 12&& g[1] > 0.55 && g[1] < 0.82 && (inc > 75 && inc < 91)) {
+            pocket = 0;
+            deviceManger.lockNow();
+        } else if (light < 2 && g[1] < -0.6 && (inc > 75 && inc < 102)) {
+            System.out.println("Mphka:" + light);
             pocket = 1;
             KeyguardManager myKM = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
             if (!myKM.isKeyguardLocked()) {
@@ -115,7 +132,7 @@ public class DetectService extends Service implements SensorEventListener {
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .build();
-
+        new CallReceiver();
         startForeground(666, notification);
     }
 
@@ -173,13 +190,30 @@ public class DetectService extends Service implements SensorEventListener {
     private final BroadcastReceiver mScreenStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent.getAction().equals(Intent.ACTION_SCREEN_ON)) {
-                if (lastAction != EVENT_UNLOCK) enableSensor();
-                lastAction = EVENT_TURN_ON_SCREEN;
-            } else if (intent.getAction().equals(Intent.ACTION_SCREEN_OFF)) {
-                disableSensor();
+            if (mode == 0) {
+                if (intent.getAction().equals(Intent.ACTION_SCREEN_ON)) {
+                    if (lastAction != EVENT_UNLOCK) enableSensor();
+                    lastAction = EVENT_TURN_ON_SCREEN;
+                } else if (intent.getAction().equals(Intent.ACTION_SCREEN_OFF)) {
+                    disableSensor();
 
-                lastAction = EVENT_TURN_OFF_SCREEN;
+                    lastAction = EVENT_TURN_OFF_SCREEN;
+                }
+            } else {
+                if (intent.getAction().equals(Intent.ACTION_SCREEN_ON)) {
+                    if (lastAction != EVENT_UNLOCK) {
+                        enableSensor();
+                        lastAction = EVENT_TURN_ON_SCREEN;
+                        new Handler().postDelayed(() -> disableSensor(), 30000);
+                    }
+                } else if (intent.getAction().equals(Intent.ACTION_SCREEN_OFF)) {
+                    disableSensor();
+                    lastAction = EVENT_TURN_OFF_SCREEN;
+                } else if (intent.getAction().equals(Intent.ACTION_USER_PRESENT)) {
+                    enableSensor();
+                    lastAction = EVENT_UNLOCK;
+                    new Handler().postDelayed(() -> disableSensor(), 30000);
+                }
             }
         }
     };
